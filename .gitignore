@@ -1,0 +1,8 @@
+build/
+*.log
+.DS_Store
+*.orig
+*.bak
+Temp/
+scripts/local.env
+dist/

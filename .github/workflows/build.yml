@@ -1,0 +1,74 @@
+# Builds the DLLs, runs the mock pipeline test under Wine and uploads the packaged release files.
+# Runs on every push to main and every pull request; release.yml calls it for releases.
+name: Build
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+  workflow_call:
+    inputs:
+      ref:
+        description: Git ref to build
+        type: string
+        required: true
+      version:
+        description: Version written into the package
+        type: string
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    # Fedora ships a recent MinGW GCC that targets the Universal CRT, like Homebrew's mingw-w64
+    container: fedora:44
+    env:
+      MINGW_PREFIX: x86_64-w64-mingw32ucrt
+      WINEDEBUG: -all
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Install toolchain
+        run: >-
+          dnf install -y --setopt=install_weak_deps=False
+          git cmake ninja-build zip
+          ucrt64-gcc-c++ ucrt64-winpthreads-static
+          wine-core
+
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref }}
+
+      - name: Configure
+        run: |
+          WINE="$(command -v wine || command -v wine64)"
+          cmake -B build -G Ninja \
+            -DCMAKE_TOOLCHAIN_FILE=cmake/x86_64-w64-mingw32.cmake \
+            -DMETALSTREAM_WINE="${WINE}"
+
+      - name: Build
+        run: ninja -C build
+
+      - name: Test (mock pipeline under Wine)
+        run: |
+          # Create the prefix first, without the Mono/Gecko installers, so ctest doesn't time out on it
+          WINE="$(command -v wine || command -v wine64)"
+          WINEPREFIX="${PWD}/build/wineprefix-test" WINEDLLOVERRIDES="mscoree,mshtml=" "${WINE}" wineboot -i
+          ctest --test-dir build --output-on-failure
+
+      - name: Package
+        env:
+          VERSION: ${{ inputs.version }}
+        # Builds outside a release are named after the commit, e.g. MetalStream-dev-1a2b3c4.zip
+        run: scripts/package.sh "${VERSION:-dev-${GITHUB_SHA::7}}" build dist
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
+          if-no-files-found: error
